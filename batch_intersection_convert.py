@@ -2,12 +2,12 @@ import os
 import json
 import cv2
 
-# Base folders
+
 JSON_BASE = "/scratch/engin_root/engin1/aphatke/conditional-lane-detection/images/lane3d_300/test/intersection_case"
 IMG_BASE  = "/scratch/engin_root/engin1/aphatke/conditional-lane-detection/images/images/training"
 
 IMG_W, IMG_H = 1920, 1280
-MIN_VISIBLE_Y = 270  # remove sky points
+MIN_VISIBLE_Y = 270  
 
 
 def convert_single(json_path, txt_out):
@@ -48,7 +48,7 @@ def convert_single(json_path, txt_out):
         if len(coords) >= 2:
             results.append(" ".join(coords))
 
-    # Write .lines.txt
+
     with open(txt_out, "w") as f:
         if results:
             f.write("\n".join(results))
@@ -76,12 +76,7 @@ def visualize(img_path, lanes, out_img):
 
 
 def find_matching_image(json_path):
-    """
-    Convert:
-      images/lane3d_300/test/intersection_case/.../123456.json
-    To:
-      images/images/.../123456.jpg
-    """
+
     filename = os.path.basename(json_path).replace(".json", ".jpg")
 
     # The segment folder is identical aside from the base root

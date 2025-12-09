@@ -7,14 +7,10 @@ dataset_type = 'CulaneDataset'
 # 2. YOUR DATA ROOT
 data_root = "/scratch/engin_root/engin1/aphatke/conditional-lane-detection"
 
-# 3. CRITICAL: SET YOUR IMAGE RESOLUTION
-# OpenLane is typically 1920x1280. If yours is different, change this!
+# 3. SET YOUR IMAGE RESOLUTION
 ori_scale = (1920, 1280) 
 
 # 4. CROP SETTINGS
-# [x_min, y_min, x_max, y_max]
-# If you want to use the full image, use [0, 0, 1920, 1280]
-# If you want to crop the sky, increase the second number (e.g., 270)
 crop_bbox = [0, 270, 1920, 1280]
 
 # Standard settings
@@ -27,9 +23,7 @@ nms_thr = 4
 batch_size = 1  # Testing uses batch size 1
 mask_size = (1, 68, 100)
 
-# This is the size the AI will "see". 
-# (800, 320) stretches the image a lot if original is 1920x1280.
-# (800, 533) preserves the aspect ratio better (3:2)
+
 img_scale = (800, 544) 
 
 img_norm_cfg = dict(
@@ -39,7 +33,7 @@ img_norm_cfg = dict(
 train_cfg = dict(out_scale=mask_down_scale)
 test_cfg = dict(out_scale=mask_down_scale)
 
-# model settings
+
 model = dict(
     type='CondLaneNet',  # Use standard CondLaneNet for stability
     pretrained='torchvision://resnet18',
@@ -98,7 +92,7 @@ model = dict(
 )
 train_compose = dict(bboxes=False, keypoints=True, masks=False)
 
-# Pipelines
+
 train_al_pipeline = [
     dict(type='Compose', params=train_compose),
     dict(
@@ -196,7 +190,6 @@ data = dict(
         test_mode=True,
     ))
 
-# Optimization
 optimizer = dict(type='Adam', lr=3e-4, betas=(0.9, 0.999), eps=1e-8)
 optimizer_config = dict(grad_clip=None)
 

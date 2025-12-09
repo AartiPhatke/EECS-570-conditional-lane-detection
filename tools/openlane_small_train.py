@@ -8,13 +8,9 @@ dataset_type = 'CulaneDataset'
 data_root = "/scratch/engin_root/engin1/aphatke/conditional-lane-detection"
 
 # 3. CRITICAL: SET YOUR IMAGE RESOLUTION
-# OpenLane is typically 1920x1280. If yours is different, change this!
 ori_scale = (1920, 1280) 
 
 # 4. CROP SETTINGS
-# [x_min, y_min, x_max, y_max]
-# If you want to use the full image, use [0, 0, 1920, 1280]
-# If you want to crop the sky, increase the second number (e.g., 270)
 crop_bbox = [0, 270, 1920, 1280]
 
 # Standard settings
@@ -27,9 +23,7 @@ nms_thr = 4
 batch_size = 4  # Adjust based on your GPU memory
 mask_size = (1, 68, 100)
 
-# This is the size the AI will "see". 
-# (800, 320) stretches the image a lot if original is 1920x1280.
-# (800, 533) preserves the aspect ratio better (3:2)
+
 img_scale = (800, 544) 
 
 img_norm_cfg = dict(

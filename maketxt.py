@@ -2,10 +2,10 @@ import os
 import json
 import cv2
 
-# ==== MODIFY THESE TWO PATHS TO THE FILES YOU WANT TO TEST ====
+
 JSON_FILE = "images/images/training/segment-16102220208346880_1420_000_1440_000_with_camera_labels/155423288515811300.jpg"
 IMG_FILE  = "/scratch/engin_root/engin1/aphatke/conditional-lane-detection/images/images/training/...YOUR_FILE.jpg"
-# =================================================================
+
 
 OUTPUT_TXT = JSON_FILE.replace(".json", ".lines.txt")
 OUTPUT_IMG = "single_label_preview.jpg"

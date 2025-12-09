@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""
-Generate train/valid/test image lists for OpenLane-style dataset.
-Writes lists to `images/list/train.txt`, `images/list/valid.txt`, `images/list/test.txt` (relative paths).
 
-Usage:
-    python tools/generate_openlane_lists.py --root .
-
-By default it looks for `images/training` and `images/validation` under root.
-"""
 import argparse
 from pathlib import Path
 
@@ -15,7 +7,7 @@ EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
 
 
 def gather_images(src_dir: Path):
-    """Recursively gather image file paths under src_dir, return sorted list of relative paths."""
+   
     if not src_dir.exists():
         return []
     imgs = [p for p in src_dir.rglob('*') if p.suffix.lower() in EXTS]
@@ -54,7 +46,7 @@ def main():
     val_list = list_dir / 'valid.txt'
     test_list = list_dir / 'test.txt'
 
-    # If lane3d lists requested, prefer those lists and map json -> jpg
+   
     if args.lane3d_dir:
         lane3d_root = (root / args.lane3d_dir).resolve()
         lane_train = lane3d_root / 'training' / 'training_list.txt'
@@ -69,7 +61,7 @@ def main():
         lane_train_list = read_lane_list(lane_train)
         lane_val_list = read_lane_list(lane_val)
 
-        # Map JSON paths to corresponding image paths under images/training or images/validation
+     
         mapped_train = []
         for rel in lane_train_list:
             img_rel = Path(args.train_dir) / Path(rel).with_suffix('.jpg')
@@ -96,7 +88,7 @@ def main():
         write_list(mapped_train, train_list, root)
         write_list(mapped_val, val_list, root)
 
-        # build test list
+
         if args.test_from_lane3d:
             test_dir = lane3d_root / 'test'
             test_files = []

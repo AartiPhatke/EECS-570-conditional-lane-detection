@@ -1,19 +1,16 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# ===== Load =====
 df = pd.read_csv("fps_log.csv")
 df["datetime"] = pd.to_datetime(df["datetime"])
 
-# Sort
+
 df = df.sort_values(["segment_name", "frame_index"])
 
-# ===== time within segment =====
 df["t_rel"] = df.groupby("segment_name")["datetime"].transform(
     lambda x: (x - x.iloc[0]).dt.total_seconds()
 )
 
-# ===== smooth total fps per segment =====
 W = 20  # smoothing window
 df["ma_total"] = (
     df.groupby("segment_name")["total_fps"]
@@ -22,11 +19,11 @@ df["ma_total"] = (
       .reset_index(level=0, drop=True)
 )
 
-# ===== segments =====
+
 segments = df["segment_name"].unique()
 idx = 0
 
-# sprint settings
+
 SPRINT_BOOST = 1.15        # +15% theoretical
 LOW_FPS_QUANTILE = 0.3     # bottom 30% of MA fps = sprint zone
 
@@ -37,7 +34,7 @@ def plot_segment(i):
     seg = segments[i]
     g = df[df.segment_name == seg]
 
-    # plot MA total
+
     ax.plot(
         g["t_rel"],
         g["ma_total"],
@@ -47,7 +44,7 @@ def plot_segment(i):
         label="MA total"
     )
 
-    # theoretical +15% sprint where MA is low
+
     thr = g["ma_total"].quantile(LOW_FPS_QUANTILE)
     low_mask = g["ma_total"] < thr
     sprint_curve = g["ma_total"].copy()

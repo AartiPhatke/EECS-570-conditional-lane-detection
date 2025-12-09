@@ -14,7 +14,7 @@ cuda_source = """
 
 #define MAX_K 64
 
-// Warp Reduction for finding Max Value & Index
+
 __device__ __forceinline__ void warp_reduce_max(float& val, int& idx) {
     unsigned int mask = 0xffffffff;
     for (int offset = 16; offset > 0; offset /= 2) {
@@ -27,8 +27,7 @@ __device__ __forceinline__ void warp_reduce_max(float& val, int& idx) {
     }
 }
 
-// --- KERNEL A: THE SCOUT (FP16) - MEMORY OPTIMIZED ---
-// Key Change: K is expected to be (D, N) layout, not (N, D)
+
 __global__ void kernel_scout_transposed(
     const __half* __restrict__ Q, 
     const __half* __restrict__ K_T, // Transposed K: Size [D x N]
@@ -38,28 +37,21 @@ __global__ void kernel_scout_transposed(
     int row = blockIdx.x; 
     int tid = threadIdx.x;
     
-    // Shared memory for scores + reduction buffer
+
     extern __shared__ float s_mem[];
     float* s_scores = s_mem;
     
-    // Buffer for block reduction (placed at end of scores)
+
     volatile float* s_max_vals = (volatile float*)&s_scores[N];
     volatile int* s_max_idxs = (volatile int*)&s_max_vals[32]; 
 
-    // -------------------------------------------------------------------------
-    // 1. COMPUTE SCORES (COALESCED)
-    // -------------------------------------------------------------------------
-    // We iterate columns (col) which correspond to target indices in N
+
     for (int col = tid; col < N; col += blockDim.x) {
         float dot = 0.0f;
         
-        // Pointers
-        // Q is Row-Major: we need Q[row, d]
+
         const __half* Q_row = &Q[row * D];
-        
-        // K is Transposed (D x N): we need K[d, col]
-        // Address = d * N + col.
-        // Since 'col' is consecutive across threads, this read is COALESCED.
+
         
         for (int d = 0; d < D; d++) {
             // Note: We lose __half2 vectorization here effectively because K is scattered 
@@ -72,14 +64,12 @@ __global__ void kernel_scout_transposed(
     }
     __syncthreads();
 
-    // -------------------------------------------------------------------------
-    // 2. PARALLEL TOP-K SELECTION (Iterative Warp Reduction)
-    // -------------------------------------------------------------------------
+
     for (int k = 0; k < K_target; k++) {
         float my_max_val = -1e20f;
         int my_max_idx = -1;
 
-        // A. Thread Local Max
+   
         for (int i = tid; i < N; i += blockDim.x) {
             float val = s_scores[i];
             if (val > my_max_val) {
@@ -88,17 +78,16 @@ __global__ void kernel_scout_transposed(
             }
         }
 
-        // B. Warp Reduction
         warp_reduce_max(my_max_val, my_max_idx);
 
-        // C. Store Warp Leaders
+      
         if ((tid % 32) == 0) {
             s_max_vals[tid / 32] = my_max_val;
             s_max_idxs[tid / 32] = my_max_idx;
         }
         __syncthreads();
 
-        // D. Final Block Reduction (Warp 0 only)
+   
         if (tid < 32) {
             int num_warps = blockDim.x / 32;
             float val = (tid < num_warps) ? s_max_vals[tid] : -1e20f;
@@ -115,7 +104,7 @@ __global__ void kernel_scout_transposed(
     }
 }
 
-// --- KERNEL B: REFINER (Standard FP32) ---
+
 __global__ void kernel_refine_fp32(
     const float* __restrict__ Q,
     const float* __restrict__ K,
@@ -159,7 +148,7 @@ __global__ void kernel_refine_fp32(
     }
 }
 
-// --- HOST WRAPPERS ---
+
 void launch_scout(torch::Tensor Q, torch::Tensor K_T, torch::Tensor idx, int Kt) {
     int N = Q.size(0); 
     int D = Q.size(1);
@@ -186,16 +175,14 @@ void launch_refine(torch::Tensor Q, torch::Tensor K, torch::Tensor V, torch::Ten
 }
 """
 
-# ==============================================================================
-# MAIN SCRIPT
-# ==============================================================================
+
 cpp_source = """
 #include <torch/extension.h>
 void launch_scout(torch::Tensor Q, torch::Tensor K_T, torch::Tensor idx, int Kt);
 void launch_refine(torch::Tensor Q, torch::Tensor K, torch::Tensor V, torch::Tensor idx, torch::Tensor out, int Kt, float s);
 """
 
-# Force Recompile with 'v5' name
+
 module = load_inline(
     name='mp_proof_v5', 
     cpp_sources=cpp_source, 
@@ -212,24 +199,23 @@ def compare_methods():
 
     print(f"--- PROOF OF MIXED PRECISION: N={N}, D={D}, Top-K={K_target} ---")
 
-    # Data
+
     Q_32 = torch.randn(N, D, device=device, dtype=torch.float32)
     K_32 = torch.randn(N, D, device=device, dtype=torch.float32)
     V_32 = torch.randn(N, D, device=device, dtype=torch.float32)
     scale = 1.0 / math.sqrt(D)
 
-    # FP16 Copies for Scout
-    # CRITICAL: Transpose K for Coalesced Access in Kernel
+
     Q_16 = Q_32.to(torch.half).contiguous()
     K_16_T = K_32.t().to(torch.half).contiguous() 
 
     indices = torch.zeros((N, K_target), dtype=torch.long, device=device)
     out_mp = torch.zeros_like(Q_32)
 
-    # Warmup
+ 
     for _ in range(10): torch.matmul(Q_32, K_32.T)
 
-    # 1. Baseline
+  
     torch.cuda.synchronize()
     start_base = time.time()
     
@@ -242,11 +228,11 @@ def compare_methods():
     time_base = (end_base - start_base) * 1000
     print(f"[Baseline] Full FP32 Attention: {time_base:.3f} ms")
 
-    # 2. Mixed Precision
+  
     torch.cuda.synchronize()
     start_mp = time.time()
 
-    # Pass Transposed K here
+
     module.launch_scout(Q_16, K_16_T, indices, K_target)
     module.launch_refine(Q_32, K_32, V_32, indices, out_mp, K_target, scale)
 

@@ -9,10 +9,6 @@ from ..builder import NECKS
 
 
 class PositionEmbeddingSine(nn.Module):
-    """
-    This is a more standard version of the position embedding, very similar to the one
-    used by the Attention is all you need paper, generalized to work on images.
-    """
 
     def __init__(self,
                  num_pos_feats=64,
@@ -62,7 +58,6 @@ def build_position_encoding(hidden_dim, shape):
 
 
 class AttentionLayer(nn.Module):
-    """ Position attention module with mixed precision (FP16 coarse -> FP32 refinement)"""
 
     def __init__(self, in_dim, out_dim, ratio=4, stride=1, top_k_ratio=0.2):
         super(AttentionLayer, self).__init__()
@@ -97,11 +92,6 @@ class AttentionLayer(nn.Module):
 
 
     def forward(self, x, pos=None):
-        """
-            Mixed-precision attention:
-            - FP16 coarse attention for all positions
-            - FP32 refinement only for Top-K important positions
-        """
         
         target_dtype = self.pre_conv.conv.weight.dtype
         
