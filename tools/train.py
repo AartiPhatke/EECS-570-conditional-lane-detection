@@ -72,12 +72,10 @@ def main():
     if cfg.get('cudnn_benchmark', False):
         torch.backends.cudnn.benchmark = True
 
-    # work_dir is determined in this priority: CLI > segment in file > filename
     if args.work_dir is not None:
-        # update configs according to CLI args if args.work_dir is not None
         cfg.work_dir = args.work_dir
     elif cfg.get('work_dir', None) is None:
-        # use config filename as default work_dir if cfg.work_dir is None
+
         cfg.work_dir = osp.join('./work_dirs',
                                 osp.splitext(osp.basename(args.config))[0])
     if args.resume_from is not None:
@@ -88,27 +86,23 @@ def main():
         cfg.gpu_ids = range(1) if args.gpus is None else range(args.gpus)
 
     if args.autoscale_lr:
-        # apply the linear scaling rule (https://arxiv.org/abs/1706.02677)
         cfg.optimizer['lr'] = cfg.optimizer['lr'] * len(cfg.gpu_ids) / 8
 
-    # init distributed env first, since logger depends on the dist info.
+
     if args.launcher == 'none':
         distributed = False
     else:
         distributed = True
         init_dist(args.launcher, **cfg.dist_params)
 
-    # create work_dir
+
     mmcv.mkdir_or_exist(osp.abspath(cfg.work_dir))
-    # init the logger before other steps
     timestamp = time.strftime('%Y%m%d_%H%M%S', time.localtime())
     log_file = osp.join(cfg.work_dir, f'{timestamp}.log')
     logger = get_root_logger(log_file=log_file, log_level=cfg.log_level)
 
-    # init the meta dict to record some important information such as
-    # environment info and seed, which will be logged
     meta = dict()
-    # log env info
+
     env_info_dict = collect_env()
     env_info = '\n'.join([(f'{k}: {v}') for k, v in env_info_dict.items()])
     dash_line = '-' * 60 + '\n'
@@ -116,11 +110,16 @@ def main():
                 dash_line)
     meta['env_info'] = env_info
 
-    # log some basic info
-    logger.info(f'Distributed training: {distributed}')
-    logger.info(f'Config:\n{cfg.pretty_text}')
 
-    # set random seeds
+    logger.info(f'Distributed training: {distributed}')
+    try:
+        
+        logger.info(f'Config:\n{cfg.pretty_text}')
+    except TypeError:
+       
+        logger.info(f'Config (raw cfg._cfg_dict):\n{cfg._cfg_dict}')
+
+
     if args.seed is not None:
         logger.info(f'Set random seed to {args.seed}, '
                     f'deterministic: {args.deterministic}')
@@ -137,13 +136,11 @@ def main():
         val_dataset.pipeline = cfg.data.train.pipeline
         datasets.append(build_dataset(val_dataset))
     if cfg.checkpoint_config is not None:
-        # save mmdet version, config file content and class names in
-        # checkpoints as meta data
+
         cfg.checkpoint_config.meta = dict(
             mmdet_version=__version__,
             config=cfg.pretty_text,
             CLASSES=datasets[0].CLASSES)
-    # add an attribute for visualization convenience
     model.CLASSES = datasets[0].CLASSES
     train_detector(
         model,

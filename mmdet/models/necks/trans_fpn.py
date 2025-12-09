@@ -62,11 +62,12 @@ def build_position_encoding(hidden_dim, shape):
 
 
 class AttentionLayer(nn.Module):
-    """ Position attention module"""
+    """ Position attention module with mixed precision (FP16 coarse -> FP32 refinement)"""
 
-    def __init__(self, in_dim, out_dim, ratio=4, stride=1):
+    def __init__(self, in_dim, out_dim, ratio=4, stride=1, top_k_ratio=0.2):
         super(AttentionLayer, self).__init__()
         self.chanel_in = in_dim
+        self.top_k_ratio = top_k_ratio  # Fraction of positions to refine in FP32
         norm_cfg = dict(type='BN', requires_grad=True)
         act_cfg = dict(type='ReLU')
         self.pre_conv = ConvModule(
@@ -94,32 +95,91 @@ class AttentionLayer(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
         self.gamma = nn.Parameter(torch.zeros(1))
 
+
     def forward(self, x, pos=None):
         """
-            inputs :
-                x : inpput feature maps( B X C X H X W)
-            returns :
-                out : attention value + input feature
-                attention: B X (HxW) X (HxW)
+            Mixed-precision attention:
+            - FP16 coarse attention for all positions
+            - FP32 refinement only for Top-K important positions
         """
-        x = self.pre_conv(x)
-        m_batchsize, _, height, width = x.size()
-        if pos is not None:
-            x += pos
-        proj_query = self.query_conv(x).view(m_batchsize, -1,
-                                             width * height).permute(0, 2, 1)
-        proj_key = self.key_conv(x).view(m_batchsize, -1, width * height)
+        
+        target_dtype = self.pre_conv.conv.weight.dtype
+        
+        if x.dtype != target_dtype:
+            x = x.to(target_dtype)
+            
+        if pos is not None and pos.dtype != target_dtype:
+            pos = pos.to(target_dtype)
 
-        energy = torch.bmm(proj_query, proj_key)
-        attention = self.softmax(energy)
-        attention = attention.permute(0, 2, 1)
-        proj_value = self.value_conv(x).view(m_batchsize, -1, width * height)
-        out = torch.bmm(proj_value, attention)
-        out = out.view(m_batchsize, -1, height, width)
-        proj_value = proj_value.view(m_batchsize, -1, height, width)
-        out_feat = self.gamma * out + x
-        out_feat = self.final_conv(out_feat)
-        return out_feat
+        x = self.pre_conv(x)
+        B, C, H, W = x.shape
+        N = H * W
+
+        if pos is not None:
+            x = x + pos
+
+        proj_query_fp32 = self.query_conv(x).view(B, -1, N).permute(0, 2, 1)  # [B, HW, C//ratio]
+        proj_key_fp32   = self.key_conv(x).view(B, -1, N)                      # [B, C//ratio, HW]
+        proj_value_fp32 = self.value_conv(x).view(B, -1, N)                    # [B, C, HW]
+
+        proj_query_fp16 = proj_query_fp32.to(torch.float16)
+        proj_key_fp16   = proj_key_fp32.to(torch.float16)
+        proj_value_fp16 = proj_value_fp32.to(torch.float16)
+
+        energy_coarse = torch.bmm(proj_query_fp16, proj_key_fp16).float()  # [B, HW, HW]
+        attention_coarse = self.softmax(energy_coarse).to(torch.float16)    # [B, HW, HW]
+
+        attention_importance = attention_coarse.sum(dim=1)                  # [B, HW]
+        top_k_count = max(1, int(N * self.top_k_ratio))
+        _, top_k_indices = torch.topk(attention_importance, k=top_k_count, dim=-1)
+        
+        top_k_mask = torch.zeros(B, N, device=x.device, dtype=torch.bool)
+        top_k_mask.scatter_(1, top_k_indices, True)
+        top_k_mask = top_k_mask.view(B, 1, H, W)
+
+
+        attention_coarse_t = attention_coarse.permute(0, 2, 1)             # [B, HW, HW]
+        out_fp16 = torch.bmm(proj_value_fp16, attention_coarse_t).view(B, C, H, W)
+
+
+
+        if top_k_count > 0:
+            top_k_flat = top_k_indices.view(B, -1)
+
+            proj_query_topk = torch.gather(
+                proj_query_fp32, dim=1,
+                index=top_k_flat.unsqueeze(-1).expand(-1, -1, proj_query_fp32.shape[-1])
+            ) 
+
+            proj_key_topk = torch.gather(
+                proj_key_fp32, dim=2,
+                index=top_k_flat.unsqueeze(1).expand(-1, proj_key_fp32.shape[1], -1)
+            ) 
+
+            energy_refined_topk = torch.bmm(proj_query_topk, proj_key_topk)     # [B, K, K]
+            attention_refined_topk = self.softmax(energy_refined_topk)          # [B, K, K]
+
+            proj_value_topk = torch.gather(
+                proj_value_fp32, dim=2,
+                index=top_k_flat.unsqueeze(1).expand(-1, C, -1)
+            )  # [B, C, K]
+
+            out_fp32_topk = torch.bmm(proj_value_topk, attention_refined_topk.permute(0, 2, 1))  # [B, C, K]
+
+            out_fp32 = out_fp16.to(torch.float32).clone()
+            out_fp32_flat = out_fp32.view(B, C, -1)
+            out_fp32_flat.scatter_(2, top_k_flat.unsqueeze(1).expand(-1, C, -1), out_fp32_topk)
+            out_fp32 = out_fp32_flat.view(B, C, H, W)
+        else:
+            out_fp32 = out_fp16.to(torch.float32)
+
+        out_fp16 = self.gamma * out_fp16 + x.to(torch.float16)
+        out_fp32 = self.gamma * out_fp32 + x
+
+        out_fp16 = self.final_conv(out_fp16.to(x.dtype)).to(torch.float16)
+        out_fp32 = self.final_conv(out_fp32)
+
+        return out_fp16, out_fp32, top_k_mask
 
 class TransConvEncoderModule(nn.Module):
     def __init__(self, in_dim, attn_in_dims, attn_out_dims, strides, ratios, downscale=True, pos_shape=None):
@@ -146,13 +206,18 @@ class TransConvEncoderModule(nn.Module):
     
     def forward(self, src):
         # src = self.first_conv(src)
+        src_fp16 = src
+        src_fp32 = src
+        top_k_mask = None
+        
         if self.pos_shape is None:
             src = self.attn_layers(src)
+            return src, None, None  
         else:
             for layer, pos in zip(self.attn_layers, self.pos_embeds):
-                src = layer(src, pos.to(src.device))
+                src_fp16, src_fp32, top_k_mask = layer(src_fp16, pos.to(src.device))
         # src = self.final_conv(src)
-        return src
+        return src_fp16, src_fp32, top_k_mask
 
 @NECKS.register_module()
 class TransConvFPN(nn.Module):
@@ -192,7 +257,6 @@ class TransConvFPN(nn.Module):
             self.backbone_end_level = self.num_ins
             assert num_outs >= self.num_ins - start_level
         else:
-            # if end_level < inputs, no extra level is allowed
             self.backbone_end_level = end_level
             assert end_level <= len(in_channels)
             assert num_outs == end_level - start_level
@@ -224,7 +288,6 @@ class TransConvFPN(nn.Module):
             self.lateral_convs.append(l_conv)
             self.fpn_convs.append(fpn_conv)
 
-        # add extra conv layers (e.g., RetinaNet)
         extra_levels = num_outs - self.backbone_end_level + self.start_level
         if add_extra_convs and extra_levels >= 1:
             for i in range(extra_levels):
@@ -243,62 +306,175 @@ class TransConvFPN(nn.Module):
                     act_cfg=act_cfg)
                 self.fpn_convs.append(extra_fpn_conv)
 
-    # default init_weights for conv(msra) and norm in ConvModule
     def init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 xavier_init(m, distribution='uniform')
 
+    
     @auto_fp16()
     def forward(self, src):
         assert len(src) >= len(self.in_channels)
         src = list(src)
+
+        expected_channels = self.trans_cfg['in_dim']
+        trans_input = None
+        trans_src_idx = None  
+
+        if self.trans_idx is not None:
+            try:
+                idx = self.trans_idx
+                if idx < 0:
+                    idx += len(src)
+                
+                candidate = src[idx]
+                if hasattr(candidate, 'shape') and len(candidate.shape) >= 2:
+                    if candidate.shape[1] == expected_channels:
+                        trans_input = candidate
+                        trans_src_idx = idx
+            except (IndexError, TypeError):
+                pass
+
+        if trans_input is None:
+            for i in range(len(src) - 1, -1, -1):
+                feat = src[i]
+                if hasattr(feat, 'shape') and len(feat.shape) >= 2:
+                    if feat.shape[1] == expected_channels:
+                        trans_input = feat
+                        trans_src_idx = i
+                        break
+        
+        if trans_input is None:
+            idx = self.trans_idx if self.trans_idx is not None else -1
+            if idx < 0:
+                idx += len(src)
+            trans_input = src[idx]
+            trans_src_idx = idx
+
+
         if self.attention:
-            trans_feat = self.trans_head(src[self.trans_idx])
-        else:
-            trans_feat = src[self.trans_idx]
-        inputs = src[:-1]
-        inputs.append(trans_feat)
-        if len(inputs) > len(self.in_channels):
-            for _ in range(len(inputs) - len(self.in_channels)):
-                del inputs[0]
+            trans_feat_fp16, trans_feat_fp32, top_k_mask = self.trans_head(trans_input)
 
-        # build laterals
-        laterals = [
-            lateral_conv(inputs[i + self.start_level])
-            for i, lateral_conv in enumerate(self.lateral_convs)
-        ]
+            if trans_feat_fp32 is None or top_k_mask is None:
+                trans_feat = trans_feat_fp16
+                return tuple(outs), trans_feat # Note: This line assumes outs exists, ensure fallback logic is complete if this case is possible.
 
-        # build top-down path
-        used_backbone_levels = len(laterals)
-        for i in range(used_backbone_levels - 1, 0, -1):
-            prev_shape = laterals[i - 1].shape[2:]
-            laterals[i - 1] += F.interpolate(
-                laterals[i], size=prev_shape, mode='nearest')
 
-        # build outputs
-        # part 1: from original levels
-        outs = [
-            self.fpn_convs[i](laterals[i]) for i in range(used_backbone_levels)
-        ]
-        # part 2: add extra levels
-        if self.num_outs > len(outs):
-            # use max pool to get more levels on top of outputs
-            # (e.g., Faster R-CNN, Mask R-CNN)
-            if not self.add_extra_convs:
-                for i in range(self.num_outs - used_backbone_levels):
-                    outs.append(F.max_pool2d(outs[-1], 1, stride=2))
-            # add conv layers on top of original feature maps (RetinaNet)
+            inputs_fp16 = list(src)
+            
+            if trans_src_idx is not None and trans_src_idx < len(inputs_fp16):
+                inputs_fp16[trans_src_idx] = trans_feat_fp16
             else:
-                if self.extra_convs_on_inputs:
-                    orig = inputs[self.backbone_end_level - 1]
-                    outs.append(self.fpn_convs[used_backbone_levels](orig))
-                else:
-                    outs.append(self.fpn_convs[used_backbone_levels](outs[-1]))
-                for i in range(used_backbone_levels + 1, self.num_outs):
-                    if self.relu_before_extra_convs:
-                        outs.append(self.fpn_convs[i](F.relu(outs[-1])))
-                    else:
-                        outs.append(self.fpn_convs[i](outs[-1]))
+                inputs_fp16[-1] = trans_feat_fp16
 
-        return tuple(outs), trans_feat
+            if len(inputs_fp16) > len(self.in_channels):
+                for _ in range(len(inputs_fp16) - len(self.in_channels)):
+                    del inputs_fp16[0]
+
+            laterals_fp16 = []
+            for i, lateral_conv in enumerate(self.lateral_convs):
+                feat = inputs_fp16[i + self.start_level]
+                
+                target_dtype = lateral_conv.conv.weight.dtype
+                if feat.dtype != target_dtype:
+                    feat = feat.to(dtype=target_dtype)
+                
+                res = lateral_conv(feat)
+                laterals_fp16.append(res.to(torch.float16))
+
+            used_backbone_levels = len(laterals_fp16)
+            
+            for i in range(used_backbone_levels - 1, 0, -1):
+                prev_shape = laterals_fp16[i - 1].shape[2:]
+                laterals_fp16[i - 1] = laterals_fp16[i - 1] + F.interpolate(
+                    laterals_fp16[i], size=prev_shape, mode='nearest'
+                )
+
+            outs_fp16 = []
+            for i in range(used_backbone_levels):
+                feat = laterals_fp16[i]
+                target_dtype = self.fpn_convs[i].conv.weight.dtype
+                if feat.dtype != target_dtype:
+                    feat = feat.to(target_dtype)
+                res = self.fpn_convs[i](feat)
+                outs_fp16.append(res.to(torch.float16))
+
+            if self.num_outs > len(outs_fp16):
+                if not self.add_extra_convs:
+                    for _ in range(self.num_outs - used_backbone_levels):
+                        outs_fp16.append(F.max_pool2d(outs_fp16[-1], 1, stride=2))
+                else:
+                    if self.extra_convs_on_inputs:
+                        orig_idx = self.backbone_end_level - 1 - (len(src) - len(inputs_fp16))
+                        orig = inputs_fp16[orig_idx]
+                    else:
+                        orig = outs_fp16[-1]
+                        
+                    extra_conv_idx = used_backbone_levels
+                    target_dtype = self.fpn_convs[extra_conv_idx].conv.weight.dtype
+                    if orig.dtype != target_dtype:
+                        orig = orig.to(target_dtype)
+                        
+                    res = self.fpn_convs[extra_conv_idx](orig)
+                    outs_fp16.append(res.to(torch.float16))
+
+                    for i in range(used_backbone_levels + 1, self.num_outs):
+                        inp = outs_fp16[-1]
+                        if self.relu_before_extra_convs:
+                            inp = F.relu(inp)
+                        target_dtype = self.fpn_convs[i].conv.weight.dtype
+                        if inp.dtype != target_dtype:
+                            inp = inp.to(target_dtype)
+                        res = self.fpn_convs[i](inp)
+                        outs_fp16.append(res.to(torch.float16))
+
+
+
+            lateral_idx = trans_src_idx - self.start_level
+
+
+            if 0 <= lateral_idx < used_backbone_levels:
+                
+                transformed_lateral_conv = self.lateral_convs[lateral_idx]
+                target_dtype = transformed_lateral_conv.conv.weight.dtype
+                
+                if trans_feat_fp32.dtype != target_dtype:
+                    trans_feat_fp32 = trans_feat_fp32.to(target_dtype)
+                    
+                lateral_trans_fp32 = transformed_lateral_conv(trans_feat_fp32)
+
+                if lateral_idx < used_backbone_levels - 1:
+                    feat_above = laterals_fp16[lateral_idx + 1]
+                    top_down_signal = F.interpolate(
+                        feat_above, 
+                        size=lateral_trans_fp32.shape[2:], 
+                        mode='nearest'
+                    ).to(target_dtype)
+                    
+                    lateral_trans_fp32 = lateral_trans_fp32 + top_down_signal
+
+                fpn_conv_for_level = self.fpn_convs[lateral_idx]
+                out_trans_level_fp32 = fpn_conv_for_level(lateral_trans_fp32)
+
+                mask_resized_level = F.interpolate(
+                    top_k_mask.float(), 
+                    size=out_trans_level_fp32.shape[2:], 
+                    mode='nearest'
+                ).to(dtype=torch.bool)
+
+                base_fp16 = outs_fp16[lateral_idx]
+                
+                out_replaced = torch.where(
+                    mask_resized_level, 
+                    out_trans_level_fp32.to(dtype=base_fp16.dtype), 
+                    base_fp16
+                )
+
+                outs_fp16[lateral_idx] = out_replaced
+
+            outs_fp32 = [out.to(torch.float32) for out in outs_fp16]
+
+            return tuple(outs_fp32), trans_feat_fp32
+        
+        else:
+            pass

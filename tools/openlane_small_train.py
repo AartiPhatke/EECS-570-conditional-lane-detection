@@ -24,7 +24,7 @@ hm_down_scale = 16
 line_width = 3
 radius = 6
 nms_thr = 4
-batch_size = 1  # Testing uses batch size 1
+batch_size = 4  # Adjust based on your GPU memory
 mask_size = (1, 68, 100)
 
 # This is the size the AI will "see". 
@@ -37,7 +37,10 @@ img_norm_cfg = dict(
 
 
 train_cfg = dict(out_scale=mask_down_scale)
-test_cfg = dict(out_scale=mask_down_scale)
+test_cfg = dict(
+    out_scale=mask_down_scale,
+    nms=dict(type='nms', iou_threshold=0.5, use_mixed_precision=True)
+)
 
 # model settings
 model = dict(
@@ -57,7 +60,7 @@ model = dict(
         norm_eval=True,
         style='pytorch'),
 
-        neck=dict(
+    neck=dict(
         type='TransConvFPN',
         in_channels=[128, 256, 64],
         out_channels=64,
@@ -69,7 +72,7 @@ model = dict(
             attn_out_dims=[64, 64],
             strides=[1, 1],
             ratios=[4, 4],
-            pos_shape=(1, 17, 25),  # Use batch_size=1 for testing
+            pos_shape=(batch_size, 17, 25),
         ),
     ),
     head=dict(
@@ -88,7 +91,7 @@ model = dict(
         hm_idx=1,
         mask_idx=0,
         compute_locations_pre=True,
-        location_configs=dict(size=(1, 1, 68, 100), device='cuda:0')),  # Use batch_size=1 for testing
+        location_configs=dict(size=(batch_size, 1, 68, 100), device='cuda:0')),
     loss_weights=dict(
         hm_weight=1,
         kps_weight=0.4,
@@ -187,10 +190,7 @@ data = dict(
     test=dict(
         type=dataset_type,
         data_root=data_root,
-        # Option 1: Use validation_list.txt (3905 images) - currently active
-        data_list=data_root + '/images/list/validation_list.txt',
-        # Option 2: Use combined_test_list.txt (intersection + training samples) - run create_combined_test_list.py first
-        # data_list=data_root + '/images/list/combined_test_list.txt',
+        data_list=data_root + '/images/list/intersection_list.txt',
         test_suffix='.jpg',
         pipeline=val_pipeline,
         test_mode=True,
@@ -218,9 +218,8 @@ total_epochs = 1
 device_ids = [0]
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
-work_dir = './work_dirs/openlane/small2'
+work_dir = './work_dirs/openlane/small5'
 load_from = None
 resume_from = None
-workflow = [('train', 200), ('val', 1)]
+workflow = [('train', 1)]
 find_unused_parameters = True # IDK WHY WE NEED THIS
-

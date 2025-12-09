@@ -119,3 +119,8 @@ work_dirs/
 *.pth
 *.py~
 *.sh~
+
+*.md
+
+images/
+visualization_results/

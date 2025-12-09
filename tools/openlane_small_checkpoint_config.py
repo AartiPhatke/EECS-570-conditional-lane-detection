@@ -1,0 +1,316 @@
+dataset_type = 'CulaneDataset'
+data_root = '/scratch/engin_root/engin1/aphatke/conditional-lane-detection'
+ori_scale = (1920, 1280)
+crop_bbox = [0, 270, 1920, 1280]
+mask_down_scale = 8
+hm_down_scale = 16
+line_width = 3
+radius = 6
+nms_thr = 4
+batch_size = 4
+mask_size = (1, 68, 100)
+img_scale = (800, 544)
+img_norm_cfg = dict(
+    mean=[75.3, 76.6, 77.6], std=[50.5, 53.8, 54.3], to_rgb=False)
+train_cfg = dict(out_scale=8)
+test_cfg = dict(out_scale=8)
+model = dict(
+    type='CondLaneNet',
+    pretrained='torchvision://resnet18',
+    train_cfg=dict(out_scale=8),
+    test_cfg=dict(out_scale=8),
+    num_classes=1,
+    backbone=dict(
+        type='ResNet',
+        depth=18,
+        strides=(1, 2, 2, 2),
+        num_stages=4,
+        out_indices=(0, 1, 2, 3),
+        frozen_stages=1,
+        norm_cfg=dict(type='BN', requires_grad=True),
+        norm_eval=True,
+        style='pytorch'),
+    neck=dict(
+        type='TransConvFPN',
+        in_channels=[128, 256, 64],
+        out_channels=64,
+        num_outs=3,
+        trans_idx=-1,
+        trans_cfg=dict(
+            in_dim=512,
+            attn_in_dims=[512, 64],
+            attn_out_dims=[64, 64],
+            strides=[1, 1],
+            ratios=[4, 4],
+            pos_shape=(4, 17, 25))),
+    head=dict(
+        type='CondLaneHead',
+        heads=dict(hm=1, params=134),
+        in_channels=(64, ),
+        num_classes=1,
+        head_channels=64,
+        head_layers=1,
+        disable_coords=False,
+        branch_in_channels=64,
+        branch_channels=64,
+        branch_out_channels=64,
+        reg_branch_channels=64,
+        branch_num_conv=1,
+        hm_idx=1,
+        mask_idx=0,
+        compute_locations_pre=True,
+        location_configs=dict(size=(4, 1, 68, 100), device='cuda:0'),
+        train_cfg=None,
+        test_cfg=None),
+    loss_weights=dict(
+        hm_weight=1, kps_weight=0.4, row_weight=1.0, range_weight=1.0))
+train_compose = dict(bboxes=False, keypoints=True, masks=False)
+train_al_pipeline = [
+    dict(
+        type='Compose', params=dict(bboxes=False, keypoints=True,
+                                    masks=False)),
+    dict(type='Crop', x_min=0, x_max=1920, y_min=0, y_max=1280, p=1),
+    dict(type='Resize', height=544, width=800, p=1),
+    dict(type='RandomBrightness', limit=0.2, p=0.6),
+    dict(
+        type='ShiftScaleRotate',
+        shift_limit=0.1,
+        scale_limit=(-0.2, 0.2),
+        rotate_limit=10,
+        border_mode=0,
+        p=0.6)
+]
+val_al_pipeline = [
+    dict(
+        type='Compose', params=dict(bboxes=False, keypoints=True,
+                                    masks=False)),
+    dict(type='Crop', x_min=0, x_max=1920, y_min=0, y_max=1280, p=1),
+    dict(type='Resize', height=544, width=800, p=1)
+]
+train_pipeline = [
+    dict(
+        type='albumentation',
+        pipelines=[
+            dict(
+                type='Compose',
+                params=dict(bboxes=False, keypoints=True, masks=False)),
+            dict(type='Crop', x_min=0, x_max=1920, y_min=0, y_max=1280, p=1),
+            dict(type='Resize', height=544, width=800, p=1),
+            dict(type='RandomBrightness', limit=0.2, p=0.6),
+            dict(
+                type='ShiftScaleRotate',
+                shift_limit=0.1,
+                scale_limit=(-0.2, 0.2),
+                rotate_limit=10,
+                border_mode=0,
+                p=0.6)
+        ]),
+    dict(
+        type='Normalize',
+        mean=[75.3, 76.6, 77.6],
+        std=[50.5, 53.8, 54.3],
+        to_rgb=False),
+    dict(type='DefaultFormatBundle'),
+    dict(
+        type='CollectLane',
+        down_scale=8,
+        hm_down_scale=16,
+        max_mask_sample=5,
+        line_width=3,
+        radius=6,
+        keys=['img', 'gt_hm'],
+        meta_keys=[
+            'filename', 'sub_img_name', 'gt_masks', 'mask_shape', 'hm_shape',
+            'ori_shape', 'img_shape', 'down_scale', 'hm_down_scale',
+            'img_norm_cfg', 'gt_points'
+        ])
+]
+val_pipeline = [
+    dict(
+        type='albumentation',
+        pipelines=[
+            dict(
+                type='Compose',
+                params=dict(bboxes=False, keypoints=True, masks=False)),
+            dict(type='Crop', x_min=0, x_max=1920, y_min=0, y_max=1280, p=1),
+            dict(type='Resize', height=544, width=800, p=1)
+        ]),
+    dict(
+        type='Normalize',
+        mean=[75.3, 76.6, 77.6],
+        std=[50.5, 53.8, 54.3],
+        to_rgb=False),
+    dict(type='DefaultFormatBundle'),
+    dict(
+        type='CollectLane',
+        down_scale=8,
+        hm_down_scale=16,
+        radius=6,
+        keys=['img', 'gt_hm'],
+        meta_keys=[
+            'filename', 'sub_img_name', 'gt_masks', 'mask_shape', 'hm_shape',
+            'ori_shape', 'img_shape', 'down_scale', 'hm_down_scale',
+            'img_norm_cfg', 'gt_points'
+        ])
+]
+data = dict(
+    samples_per_gpu=4,
+    workers_per_gpu=4,
+    train=dict(
+        type='CulaneDataset',
+        data_root=
+        '/scratch/engin_root/engin1/aphatke/conditional-lane-detection',
+        data_list=
+        '/scratch/engin_root/engin1/aphatke/conditional-lane-detection/images/list/training_list.txt',
+        pipeline=[
+            dict(
+                type='albumentation',
+                pipelines=[
+                    dict(
+                        type='Compose',
+                        params=dict(bboxes=False, keypoints=True,
+                                    masks=False)),
+                    dict(
+                        type='Crop',
+                        x_min=0,
+                        x_max=1920,
+                        y_min=0,
+                        y_max=1280,
+                        p=1),
+                    dict(type='Resize', height=544, width=800, p=1),
+                    dict(type='RandomBrightness', limit=0.2, p=0.6),
+                    dict(
+                        type='ShiftScaleRotate',
+                        shift_limit=0.1,
+                        scale_limit=(-0.2, 0.2),
+                        rotate_limit=10,
+                        border_mode=0,
+                        p=0.6)
+                ]),
+            dict(
+                type='Normalize',
+                mean=[75.3, 76.6, 77.6],
+                std=[50.5, 53.8, 54.3],
+                to_rgb=False),
+            dict(type='DefaultFormatBundle'),
+            dict(
+                type='CollectLane',
+                down_scale=8,
+                hm_down_scale=16,
+                max_mask_sample=5,
+                line_width=3,
+                radius=6,
+                keys=['img', 'gt_hm'],
+                meta_keys=[
+                    'filename', 'sub_img_name', 'gt_masks', 'mask_shape',
+                    'hm_shape', 'ori_shape', 'img_shape', 'down_scale',
+                    'hm_down_scale', 'img_norm_cfg', 'gt_points'
+                ])
+        ],
+        test_mode=False),
+    val=dict(
+        type='CulaneDataset',
+        data_root=
+        '/scratch/engin_root/engin1/aphatke/conditional-lane-detection',
+        data_list=
+        '/scratch/engin_root/engin1/aphatke/conditional-lane-detection/images/list/validation_list.txt',
+        pipeline=[
+            dict(
+                type='albumentation',
+                pipelines=[
+                    dict(
+                        type='Compose',
+                        params=dict(bboxes=False, keypoints=True,
+                                    masks=False)),
+                    dict(
+                        type='Crop',
+                        x_min=0,
+                        x_max=1920,
+                        y_min=0,
+                        y_max=1280,
+                        p=1),
+                    dict(type='Resize', height=544, width=800, p=1)
+                ]),
+            dict(
+                type='Normalize',
+                mean=[75.3, 76.6, 77.6],
+                std=[50.5, 53.8, 54.3],
+                to_rgb=False),
+            dict(type='DefaultFormatBundle'),
+            dict(
+                type='CollectLane',
+                down_scale=8,
+                hm_down_scale=16,
+                radius=6,
+                keys=['img', 'gt_hm'],
+                meta_keys=[
+                    'filename', 'sub_img_name', 'gt_masks', 'mask_shape',
+                    'hm_shape', 'ori_shape', 'img_shape', 'down_scale',
+                    'hm_down_scale', 'img_norm_cfg', 'gt_points'
+                ])
+        ],
+        test_mode=False),
+    test=dict(
+        type='CulaneDataset',
+        data_root=
+        '/scratch/engin_root/engin1/aphatke/conditional-lane-detection',
+        data_list=
+        '/scratch/engin_root/engin1/aphatke/conditional-lane-detection/images/list/intersection_list.txt',
+        test_suffix='.jpg',
+        pipeline=[
+            dict(
+                type='albumentation',
+                pipelines=[
+                    dict(
+                        type='Compose',
+                        params=dict(bboxes=False, keypoints=True,
+                                    masks=False)),
+                    dict(
+                        type='Crop',
+                        x_min=0,
+                        x_max=1920,
+                        y_min=0,
+                        y_max=1280,
+                        p=1),
+                    dict(type='Resize', height=544, width=800, p=1)
+                ]),
+            dict(
+                type='Normalize',
+                mean=[75.3, 76.6, 77.6],
+                std=[50.5, 53.8, 54.3],
+                to_rgb=False),
+            dict(type='DefaultFormatBundle'),
+            dict(
+                type='CollectLane',
+                down_scale=8,
+                hm_down_scale=16,
+                radius=6,
+                keys=['img', 'gt_hm'],
+                meta_keys=[
+                    'filename', 'sub_img_name', 'gt_masks', 'mask_shape',
+                    'hm_shape', 'ori_shape', 'img_shape', 'down_scale',
+                    'hm_down_scale', 'img_norm_cfg', 'gt_points'
+                ])
+        ],
+        test_mode=True))
+optimizer = dict(type='Adam', lr=0.0003, betas=(0.9, 0.999), eps=1e-08)
+optimizer_config = dict(grad_clip=None)
+lr_config = dict(
+    policy='step',
+    warmup='constant',
+    warmup_iters=100,
+    warmup_ratio=0.3333333333333333,
+    step=[8, 14])
+checkpoint_config = dict(interval=1)
+log_config = dict(interval=1, hooks=[dict(type='TextLoggerHook')])
+total_epochs = 2
+device_ids = '0,1'
+dist_params = dict(backend='nccl')
+log_level = 'INFO'
+work_dir = './work_dirs/openlane/small'
+load_from = None
+resume_from = None
+workflow = [('train', 200), ('val', 1)]
+find_unused_parameters = True
+gpu_ids = range(0, 1)
+seed = None

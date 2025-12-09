@@ -1,90 +1,92 @@
 import os
+import json
+import cv2
 
-# where the JSONs live
-LANE3D_ROOT = "images/lane3d_300"
+# ==== MODIFY THESE TWO PATHS TO THE FILES YOU WANT TO TEST ====
+JSON_FILE = "images/images/training/segment-16102220208346880_1420_000_1440_000_with_camera_labels/155423288515811300.jpg"
+IMG_FILE  = "/scratch/engin_root/engin1/aphatke/conditional-lane-detection/images/images/training/...YOUR_FILE.jpg"
+# =================================================================
 
-# where the actual images live
-IMAGES_ROOT = "images/images"
+OUTPUT_TXT = JSON_FILE.replace(".json", ".lines.txt")
+OUTPUT_IMG = "single_label_preview.jpg"
 
-# where we will write txt files (already exists for you)
-OUTPUT_DIR = "images/list"
-
-
-def make_split_list(split_name, json_root, img_subdir, txt_name=None):
-    """
-    split_name: just for printing/logging
-    json_root:  folder that contains the .json annotations
-    img_subdir: relative path under IMAGES_ROOT where the .jpg live
-                e.g. "training", "validation"
-    txt_name:   output txt file name; if None, use f"{split_name}_list.txt"
-    """
-    if txt_name is None:
-        txt_name = f"{split_name}_list.txt"
-
-    json_root = os.path.join(LANE3D_ROOT, json_root)
-    img_root = os.path.join(IMAGES_ROOT, img_subdir)
-    out_path = os.path.join(OUTPUT_DIR, txt_name)
-
-    print(f"Creating {out_path} from JSONs in {json_root}")
-
-    count = 0
-    missing = 0
-
-    with open(out_path, "w") as f:
-        for root, _, files in os.walk(json_root):
-            for file in files:
-                if not file.endswith(".json"):
-                    continue
-
-                # relative path from json_root, e.g. "segment-xxx"
-                rel_dir = os.path.relpath(root, json_root)
-
-                # same filename but .jpg instead of .json
-                img_name = file.replace(".json", ".jpg")
-
-                img_path = os.path.join(img_root, rel_dir, img_name)
-
-                if os.path.exists(img_path):
-                    f.write(img_path + "\n")
-                    count += 1
-                else:
-                    print(f"WARNING: missing image for {os.path.join(root, file)}")
-                    missing += 1
-
-    print(f"{split_name}: wrote {count} lines, {missing} missing images\n")
+IMG_W, IMG_H = 1920, 1280
+MIN_VISIBLE_Y = 270  # remove sky points
 
 
-def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+def convert_single(json_path, txt_out):
+    """Convert one OpenLane JSON → .lines.txt"""
+    with open(json_path, "r") as f:
+        data = json.load(f)
 
-    # 1) training: lane3d_300/training JSON -> images/images/training JPG
-    make_split_list(
-        split_name="training",
-        json_root="training",
-        img_subdir="training",
-        txt_name="training_list.txt",
-    )
+    lanes = data.get("lane_lines", [])
+    results = []
 
-    # 2) validation: lane3d_300/validation JSON -> images/images/validation JPG
-    make_split_list(
-        split_name="validation",
-        json_root="validation",
-        img_subdir="validation",
-        txt_name="validation_list.txt",
-    )
+    for lane in lanes:
+        uv = lane.get("uv", [])
+        vis = lane.get("visibility", [])
 
-    # 3) intersection test set (if you want a separate txt for that)
-    # JSONs: lane3d_300/test/intersection_case
-    # Images: usually come from validation images (you can change if needed)
-    make_split_list(
-        split_name="intersection",
-        json_root=os.path.join("test", "intersection_case"),
-        img_subdir="validation",          # or "training" if that’s where they are
-        txt_name="intersection_list.txt",
-    )
+        if len(uv) != 2:
+            continue
 
-    print("Done.")
+        xs = uv[0]
+        ys = uv[1]
+
+        if len(vis) != len(xs):
+            vis = [1.0] * len(xs)
+
+        coords = []
+
+        for x, y, v in zip(xs, ys, vis):
+            x = float(x)
+            y = float(y)
+
+            if v <= 0: continue
+            if y < MIN_VISIBLE_Y: continue
+            if not (0 <= x <= IMG_W): continue
+            if not (0 <= y <= IMG_H): continue
+
+            coords.append(f"{x:.4f} {y:.4f}")
+
+        if len(coords) >= 2:
+            results.append(" ".join(coords))
+
+    with open(txt_out, "w") as f:
+        if results:
+            f.write("\n".join(results))
+
+    print(f"Saved: {txt_out}")
+    return results
+
+
+def visualize(img_path, lanes, out_img):
+    """Draw the lanes on the image for sanity checking."""
+    img = cv2.imread(img_path)
+    if img is None:
+        print("ERROR: cannot load image:", img_path)
+        return
+
+    for lane in lanes:
+        pts = lane.split(" ")
+        pts = list(map(float, pts))
+
+        for i in range(0, len(pts), 2):
+            x = int(pts[i])
+            y = int(pts[i+1])
+            cv2.circle(img, (x, y), 5, (0, 0, 255), -1)
+
+    cv2.imwrite(out_img, img)
+    print(f"Saved visualization: {out_img}")
 
 
 if __name__ == "__main__":
-    main()
+    print("Converting single JSON...")
+    lanes = convert_single(JSON_FILE, OUTPUT_TXT)
+
+    if not lanes:
+        print("No lanes produced! Check filters.")
+    else:
+        print("Visualizing...")
+        visualize(IMG_FILE, lanes, OUTPUT_IMG)
+
+    print("\nDONE.")
