@@ -1,9 +1,18 @@
 import argparse
 import os
+import sys
+
+# Add project root to path
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, project_root)
+os.environ['PYTHONPATH'] = project_root
+
 import numpy as np
 import random
 import math
 import json
+import csv
+from datetime import datetime
 
 import cv2
 import mmcv
@@ -37,6 +46,10 @@ def parse_args():
         '--result_dst',
         default='./work_dirs/culane/results',
         help='path to save results')
+    parser.add_argument(
+        '--csv_output',
+        default=None,
+        help='path to save CSV file with FPS, lanes, and segment data (e.g., ./fps_log.csv)')
     parser.add_argument(
         '--launcher',
         choices=['none', 'pytorch', 'slurm', 'mpi'],
@@ -182,7 +195,8 @@ def single_gpu_test(seg_model,
                     result_dst=None,
                     crop_bbox=[0, 270, 1640, 590],
                     nms_thr=4,
-                    mask_size=(1, 40, 100)):
+                    mask_size=(1, 40, 100),
+                    csv_output_path=None):
     seg_model.eval()
     dataset = data_loader.dataset
     post_processor = CondLanePostProcessor(
@@ -202,6 +216,10 @@ def single_gpu_test(seg_model,
     inference_latency_by_lane_count = defaultdict(list)  # {num_lanes: [inference_time_ms1, ...]}
     total_latency_by_lane_count = defaultdict(list)      # {num_lanes: [total_time_ms1, ...]}
     postproc_latency_by_lane_count = defaultdict(list)   # {num_lanes: [postproc_time_ms1, ...]}
+    
+    # CSV logging setup
+    csv_data = []
+    test_start_time = time.time()
 
     for i, data in enumerate(data_loader):
         total_start = time.time()
@@ -266,6 +284,35 @@ def single_gpu_test(seg_model,
             # Define post-proc latency as (total - forward) in ms, as requested
             postproc_latency_by_lane_count[num_lanes].append(
                 (total_time - inference_time) * 1000)
+            
+            # Extract segment name from path
+            segment_name = "unknown"
+            image_name = os.path.basename(sub_name) if sub_name else "unknown"
+            if sub_name:
+                # Extract segment from path like /images/validation/segment-xxx/xxx.jpg
+                path_parts = sub_name.replace('\\', '/').split('/')
+                for part in path_parts:
+                    if part.startswith('segment-'):
+                        segment_name = part
+                        break
+            
+            # Calculate elapsed time since test start
+            elapsed_time = time.time() - test_start_time
+            
+            # Log to CSV data
+            csv_data.append({
+                'frame_index': i + 1,
+                'timestamp': elapsed_time,
+                'datetime': datetime.now().isoformat(),
+                'inference_fps': current_inference_fps,
+                'total_fps': current_total_fps,
+                'num_lanes': num_lanes,
+                'segment_name': segment_name,
+                'image_name': image_name,
+                'inference_time_ms': inference_time * 1000,
+                'postproc_time_ms': postproc_time * 1000,
+                'total_time_ms': total_time * 1000
+            })
 
             # Display FPS info periodically
             if (i + 1) % 10 == 0 or i == 0:
@@ -400,6 +447,25 @@ def single_gpu_test(seg_model,
             print("      Tot Lat = Total latency (inference + post-processing + I/O)")
             print("      Post-Proc Lat = Post-processing latency (lane extraction, NMS, coordinate transform)")
             print(f"{'='*110}")
+    
+    # Write CSV file if requested
+    if csv_output_path and csv_data:
+        csv_dir = os.path.dirname(csv_output_path)
+        if csv_dir:
+            mkdir(csv_dir)
+        
+        with open(csv_output_path, 'w', newline='', encoding='utf-8') as csvfile:
+            fieldnames = ['frame_index', 'timestamp', 'datetime', 'inference_fps', 'total_fps', 
+                         'num_lanes', 'segment_name', 'image_name', 
+                         'inference_time_ms', 'postproc_time_ms', 'total_time_ms']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(csv_data)
+        
+        print(f"\n{'='*60}")
+        print(f"CSV log saved to: {csv_output_path}")
+        print(f"Total frames logged: {len(csv_data)}")
+        print(f"{'='*60}")
 
 
 class DateEnconding(json.JSONEncoder):
@@ -412,6 +478,84 @@ class DateEnconding(json.JSONEncoder):
 def main():
     args = parse_args()
 
+    # Apply patches for Windows compatibility (same as train_fixed.py)
+    import shutil
+    import mmcv.utils.config as mmcv_config
+    _original_file2dict = mmcv_config.Config._file2dict
+    
+    def _patched_file2dict(filename, use_predefined_variables=True):
+        """Patched version that uses a flat temp structure"""
+        import mmcv
+        from mmcv.utils import check_file_exist
+        import os.path as osp
+        
+        filename = osp.abspath(osp.expanduser(filename))
+        check_file_exist(filename)
+        
+        if filename.endswith('.py'):
+            project_temp = os.path.join(project_root, 'temp')
+            os.makedirs(project_temp, exist_ok=True)
+            
+            import uuid
+            temp_name = f"config_{uuid.uuid4().hex[:8]}.py"
+            temp_path = os.path.join(project_temp, temp_name)
+            
+            try:
+                shutil.copyfile(filename, temp_path)
+                
+                try:
+                    with open(temp_path, 'r', encoding='utf-8') as f:
+                        cfg_text = f.read()
+                except UnicodeDecodeError:
+                    with open(temp_path, 'r', encoding='latin-1') as f:
+                        cfg_text = f.read()
+                
+                # Set __file__ to original filename before execution
+                # This ensures os.path.abspath(__file__) in config uses original path
+                cfg_dict = {}
+                # Pre-set __file__ so it's available during execution
+                exec(f'__file__ = r"{filename}"', cfg_dict)
+                exec(compile(cfg_text, filename, 'exec'), cfg_dict)  # Use original filename for compile
+                # Ensure __file__ is set correctly in final dict
+                cfg_dict['__file__'] = filename
+                
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+                
+                return cfg_dict, cfg_text
+            except Exception as e:
+                try:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                except:
+                    pass
+                raise e
+        else:
+            return _original_file2dict(filename, use_predefined_variables)
+    
+    mmcv_config.Config._file2dict = staticmethod(_patched_file2dict)
+    
+    # Patch device handling (same as train_fixed.py)
+    import torch.nn.parallel._functions as torch_parallel_funcs
+    _original_get_stream = torch_parallel_funcs._get_stream
+    
+    def _patched_get_stream(device):
+        """Patched version that handles integer device IDs"""
+        if isinstance(device, int):
+            device = torch.device(f'cuda:{device}')
+        return _original_get_stream(device)
+    
+    torch_parallel_funcs._get_stream = _patched_get_stream
+    
+    try:
+        import mmcv.parallel._functions as mmcv_parallel_funcs
+        if hasattr(mmcv_parallel_funcs, '_get_stream'):
+            mmcv_parallel_funcs._get_stream = _patched_get_stream
+    except:
+        pass
+    
     cfg = mmcv.Config.fromfile(args.config)
     # set cudnn_benchmark
     if cfg.get('cudnn_benchmark', False):
@@ -453,7 +597,8 @@ def main():
         result_dst=args.result_dst,
         crop_bbox=cfg.crop_bbox,
         nms_thr=cfg.nms_thr,
-        mask_size=cfg.mask_size)
+        mask_size=cfg.mask_size,
+        csv_output_path=args.csv_output)
 
 
 if __name__ == '__main__':
