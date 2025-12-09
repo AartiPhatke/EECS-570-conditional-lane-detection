@@ -104,9 +104,9 @@ if __name__ == "__main__":
 
             img_path = find_matching_image(json_path)
             if not os.path.exists(img_path):
-                print("❌ Matching image not found:", img_path)
+                print("Matching image not found:", img_path)
                 continue
-            print("✓ Found image:", img_path)
+            print("Found image:", img_path)
 
             txt_out = json_path.replace(".json", ".lines.txt")
             preview_out = json_path.replace(".json", "_preview.jpg")
@@ -116,6 +116,6 @@ if __name__ == "__main__":
             if lanes:
                 visualize(img_path, lanes, preview_out)
             else:
-                print("⚠️ No valid lanes after filtering.")
+                print("No valid lanes after filtering.")
 
     print("\n=== DONE ===")

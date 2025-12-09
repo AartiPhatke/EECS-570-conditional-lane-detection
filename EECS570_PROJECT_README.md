@@ -48,7 +48,7 @@ tar -xvf images.tar --ignore-zeros
 cd ..
 
 
-## Training new model:
+## Training new model (REQUIRES GPU):
 
 1. Converts JSON files to .lines.txt format for training/validation
 python maketxt.py
@@ -57,15 +57,21 @@ python maketxt.py
 python convert_labels_final.py
 
 3. Start training
-CUDA_VISIBLE_DEVICES=0 PORT=29500 tools/dist_train.sh tools/openlane_small_train.py 1
+CUDA_VISIBLE_DEVICES=0 PORT=29500 tools/dist_train.sh tools/openlane_small_train.py 1 
 
-## Testing new model:
+## Testing new model (REQUIRES GPU):
 
 python tools/condlanenet/culane/test_culane.py \
     tools/openlane_small_test.py \
     work_dirs/openlane/small/epoch_2.pth \
     --show \
     --show_dst visualization_results
+    --csv_output fps_log.csv
+
+## Running Mixed Precision CUDA Kernal POC (REQUIRES GPU):
+
+python 2kernal_mixed_precision_poc.py
+
 
 ## Getting GFLOP value:
 
@@ -78,3 +84,13 @@ python sprint_plot.py
 ##Getting FPS plot after test:
 
 python plot.py
+
+## Create video from visualization:
+
+python create_video_from_visualization.py
+
+## Create images with annotation in intersections:
+python batch_intersection_convert.py
+
+## Create a bigger list for testing using intesection list and training list:
+python create_combined_test_list.py
