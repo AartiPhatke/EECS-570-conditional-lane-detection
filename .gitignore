@@ -120,7 +120,5 @@ work_dirs/
 *.py~
 *.sh~
 
-*.md
-
 images/
 visualization_results/
